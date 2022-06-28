@@ -1,0 +1,322 @@
+---
+title: "Taller 2"
+author: "Juan Sebastián Riveros-Sebastián Delgadillo-Laura Arocha-Carolina Ospina"
+date: "7/5/2021"
+output: 
+  prettydoc::html_pretty:
+  theme: architect
+  highlight: github
+  toc: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(beepr)
+library(plotly)
+library(knitr)
+library(reshape2)
+library(ggplot2)
+```
+
+# Optimality of state-dependet (s,S) policies in inventory models with Markov-modulated demand and lost sales.
+
+### Componentes  
+
+  1. $E=\{1,...,8\}$: Conjunto de épocas donde se toma una decisión.
+  2. $X_{e}$: Variable que representa el sistema en cada época $e\in E$.
+  3. $S_{e}$: Conjunto de posibles valores (estados) que puede tomar la variable en la época      de observación $e\in E$.
+  4. $A_{e}(i)$: Conjunto de decisiones que es posible tomar cuando el sistema está en la            época $e\in E$ y la variable toma un valor $i\in S_{e}$.
+  5. $r_{e}(i,a)$: Costo de tomar la decisión $a\in A_{e}(i)$, en la época $e\in E$ dado que está en el estado $i\in S_{e}$.
+  6. $p_{e}(j|i,a)$: Probabilidad que al tomar la decisión $a\in A_{e}(i)$, en la época $e\in E$ dado que está en el estado $i\in S_{e}$, en la época $e + 1$ el sistema pase a estar en el estado $j\in S_{e+1}$.
+  
+
+### Supuestos
+
+  - Se maneja un sistema de inventario con ventas pérdidas, es decir, la cantidad de unidades que no son vendidas por falta de inventario no será repuesta.
+  - El horizonte de tiempo es de 8 épocas o periodos.
+  
+
+```{r, include= FALSE}
+cap <-200
+#Epocas
+epocas <- 1:8
+
+#Variable 1: Inventario a mano
+perdidas <- paste("p",117:1,sep = "-")
+estados <- c(perdidas,paste(0:cap,"",sep = ""))
+```
+
+### Decisiones
+- Se pueden pedir entre 0 y 200 unidades. 
+```{r, include=FALSE}
+#Decisiones
+dec <- paste(0:200,"",sep = "")
+```
+
+### Demanda
+- La demanda en para cada uno de los periodos se distribuye uniforme discreta entre unos valores dados para a y b.
+```{r , echo=FALSE}
+#Valores de demanda
+ai <- c(23,30,43,37,57,38,23,16)
+bi <- c(45,60,87,75,117,78,45,30)
+demanda<- data.frame(Época=epocas,a=ai,b=bi,Media=(ai+bi)/2, Desviación=round(sqrt(((bi-ai+1)^2-1)/12),1))
+kable(demanda)
+```
+
+### Cálculo de probabilidades
+
+Las probabilidades están dadas por:
+
+  - La decisión (unidades a pedir)
+  - La época
+  - El estado actual en el sistema
+  - El estado que tendrá en la siguiente época.
+
+Estas probabilidades se construyen a partir de matrices. Para cada época, hay un total de 201 matrices, dado que estas son las posibles decisiones que se pueden tomar (pedir entre 0 y 200 unidades), con las probabilidades de pasar de un estado $i$ a uno $j$ en una época.
+```{r, include= FALSE}
+#Probabilidades
+probs <- list()
+for(e in epocas){
+  probs[[e]] <- list()
+  for(a in as.integer(dec)+1){
+    probs[[e]][[a]] <- matrix(0,nrow = min(length(estados),cap-a+ai[e]+117),
+                              ncol = length(estados),
+                              dimnames = list(estados[1:min(length(estados),cap-a+ai[e]+117)],estados))
+  }
+  names(probs[[e]]) <- dec
+}
+names(probs) <- epocas
+```
+
+Para hacer el cálculo de cada una de las probabilidades,se deben tener en cuenta los posibles estados del sistema:
+
+  - La demanda es menor o igual al nivel de inventario anterior más la cantidad pedida.
+  - La demanda es mayor al nivel de inventario anterior más la cantidad pedida. (Se incurre en faltantes)
+  - Se incurrió en faltantes en el periodo anterior y la nueva demanda es menor o igual a la cantidad pedida.
+  - Se incurrió en faltantes en el periodo anterior y la nueva demanda es mayor a la cantidad pedida. (Se incurre en faltantes nuevamente)
+  
+```{r, include=FALSE}
+###### ------------ Cálculo de las probabilidades ------------
+for(e in epocas){ #Recorrido por épocas
+  print(e)
+  for(a in dec){ #Recorrido de acciones]
+    for(i in rownames(probs[[e]][[a]])){ #Recorrido de mes actual
+      for(d in ai[e]:bi[e]){
+        if(unlist(strsplit(i,"-"))[1]!="p"){
+          if(d<=as.integer(i)+as.integer(a) && as.integer(i)+as.integer(a)-d<=cap){
+            probs[[e]][[a]][i,as.character(as.integer(i)+as.integer(a)-d)] = 1/(bi[e]-ai[e]+1)
+          }else if(d>as.integer(i)+as.integer(a)){
+            probs[[e]][[a]][i,paste("p",d-as.integer(i)-as.integer(a), sep = "-")] = 1/(bi[e]-ai[e]+1)
+          }
+        }else{
+          if(d<=as.integer(a)){
+            probs[[e]][[a]][i,as.character(as.integer(a)-d)] = 1/(bi[e]-ai[e]+1)
+          }else if(d>as.integer(a)){
+            probs[[e]][[a]][i,paste("p",d-as.integer(a), sep = "-")] = 1/(bi[e]-ai[e]+1)
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Parámetros
+
+  - Costo fijo: $K=\$200$
+  - Costo unitario: $c=\$2$
+  - Costo por mantener una unidad en inventario: $h=\$1$
+  - Costo por unidad faltante: $p=\$10$
+  
+```{r, include=FALSE}
+K <- 200
+c <- 2
+h <- 1
+p <- 10
+```
+
+### Recursión
+
+Teniendo en cuenta que se trata de una programación dinámica estocástica, existe una probabilidad asociada, la cual depende de la decisión tomada. Dado lo anterior y sabiendo que buscamos minimizar los costos, la recursión está determinada por la siguiente función:
+
+  \[f_{e}(i)=\min_{a\in A_{e}(i)}\{r_{e}(i,a)+\sum_{j\in S_{e+1}} p_{e}(j|i,a)*f_{e+1}(j))\}\;\;\forall e\in E\backslash\{8\}\]
+  \[f_{8}(i)= \min_{a\in A_{8}(i)} \{r_{8}(i,a)\}\]
+
+```{r, include=FALSE}
+f_rec <- matrix(1e8, nrow = length(estados), ncol = length(epocas),
+                dimnames = list(estados,epocas))
+
+mat_dec <- matrix("-", nrow = length(estados), ncol = length(epocas),
+                  dimnames = list(estados,epocas))
+
+for(i in estados){
+  minimo <- 1e8
+  for(a in dec){
+    if(unlist(strsplit(i,"-"))[1]=="p" && as.integer(a)>0){
+      valor <- K+as.integer(a)*c+as.integer(unlist(strsplit(i,"-"))[2])*p
+    }else if(unlist(strsplit(i,"-"))[1]=="p" && as.integer(a)==0){
+      valor <- as.integer(unlist(strsplit(i,"-"))[2])*p
+    }else if(unlist(strsplit(i,"-"))[1]!="p" && as.integer(a)>0){
+      valor <- K+as.integer(a)*c+as.integer(i)*h
+    }else{
+      valor <- as.integer(i)*h
+    }
+    
+    if(i %in% rownames(probs[[length(epocas)]][[a]])){
+      for(j in estados){
+        if(unlist(strsplit(j,"-"))[1]=="p"){
+          f <- as.integer(unlist(strsplit(j,"-"))[2])*p
+        }else{
+          f <- as.integer(j)*h
+        }
+        valor <- valor + probs[[length(epocas)]][[a]][i,j]*f
+      }
+    }else{
+      valor <- 1e8
+    }
+    if(valor < minimo){
+      f_rec[i,length(epocas)] <- valor
+      mat_dec[i,length(epocas)] <- a
+      minimo <- valor
+    }
+  }
+}
+
+for(e in (length(epocas)-1):1){
+  print(e)
+  for(i in estados){
+    minimo <- 1e8
+    for(a in dec){
+      if(unlist(strsplit(i,"-"))[1]=="p" && as.integer(a)>0){
+        valor <- K+as.integer(a)*c+as.integer(unlist(strsplit(i,"-"))[2])*p
+      }else if(unlist(strsplit(i,"-"))[1]=="p" && as.integer(a)==0){
+        valor <- as.integer(unlist(strsplit(i,"-"))[2])*p
+      }else if(unlist(strsplit(i,"-"))[1]!="p" && as.integer(a)>0){
+        valor <- K+as.integer(a)*c+as.integer(i)*h
+      }else{
+        valor <- as.integer(i)*h
+      }
+      
+      if(i %in% rownames(probs[[e]][[a]])){
+        for(j in estados){
+          valor <- valor + probs[[e]][[a]][i,j]*f_rec[j,e+1]
+        }
+      }else{
+        valor <- 1e8
+      }
+      if(valor < minimo){
+        f_rec[i,e] <- valor
+        mat_dec[i,e] <- a
+        minimo <- valor
+      }
+    }
+  }
+}
+```
+
+## Mapa de calor
+
+Una vez hecha la recursión, se presenta un mapa de calor en el cual se podrán observar las decisiones óptimas para cada uno de los estados en todas las épocas del horizonte de planeación.
+
+  - $x$: Representa la época.
+  - $y$: Representa el nivel de inventario actual. El valor del punto de re-orden de cada época está situado en el mayor valor de $y$ con un $z$ diferente de cero. Es decir, para la primera época el punto de reorden es 16.
+  - $z$: Representa la decisión que se debe tomar en la política óptima dada una época y un estado inicial.
+  - $z(e,0)$: Representa el nivel máximo de abastecimiento $(S)$ de la política en cada época $e$. 
+  
+```{r, echo=FALSE}
+decisionesOptimasLista <- melt(mat_dec[paste(0:110,"",sep = ""),])
+decisionesOptimasLista$value <- decisionesOptimasLista$value
+colnames(decisionesOptimasLista) <- c("Estado", "Época", "Decisión")
+
+fig <- plot_ly(colors = colorRamp(c("blue", "yellow", "red")),
+               colorbar = list(title = "Decisión"),
+               z = decisionesOptimasLista$Decisión, type = "heatmap", x = decisionesOptimasLista$Época, y = decisionesOptimasLista$Estado)
+fig <- fig %>% layout(title = "Política (s,S)",
+                      xaxis = list(title = 'Época'),
+                      yaxis = list(title = 'Nivel de Inventario'))
+fig
+```
+
+A continuación se presentan los valores dados para la política (s,S) para cada una de las épocas.
+```{r, echo=FALSE}
+s <- c()
+S <- c()
+for(e in epocas){
+  i <- 1
+  se <- "0"
+  while(as.integer(mat_dec[estados[i],e])>0){
+    se <- estados[i]
+    i = i+1
+  }
+  s <- c(s,se)
+  S <- c(S,mat_dec["0",e])
+}
+sS <- rbind(as.integer(s),as.integer(S))
+dimnames(sS) <- list(c("s","S"),epocas)
+
+
+politica<-data.frame(sS)
+colnames(politica)<-epocas
+kable(politica)
+```
+
+## Simulación política (s,S)
+
+Para el caso en cuestión se realizan tres simulaciones donde la demanda sigue la distribución uniforme con los parámetros mencionados anteriormente.
+
+En la siguiente gráfica se puede observar el comportamiento del nivel de inventario de cada simulaciónen el horizonte de planeación, junto con los respectivos puntos asociados a la política de inventarios (s y S).
+```{r, echo=FALSE}
+
+dem1 <- c()
+dem2 <- c()
+dem3 <- c()
+for(e in epocas){
+  dem1 <- c(dem1,round(runif(1,ai[e],bi[e])))
+  dem2 <- c(dem2,round(runif(1,ai[e],bi[e])))
+  dem3 <- c(dem3,round(runif(1,ai[e],bi[e])))
+}
+
+x1 <- c(1)
+x2 <- c(1)
+x3 <- c(1)
+inv1 <- c(0)
+inv2 <- c(0)
+inv3 <- c(0)
+for(e in epocas){
+  #Simulación 1
+  if(inv1[length(inv1)]<=sS["s",e]){
+    x1 <- c(x1,e)
+    inv1 <- c(inv1,sS["S",e])
+  }
+  x1 <- c(x1,e+1)
+  inv1 <- c(inv1,inv1[length(inv1)]-dem1[e])
+  
+  #Simulación 2
+  if(inv2[length(inv2)]<=sS["s",e]){
+    x2 <- c(x2,e)
+    inv2 <- c(inv2,sS["S",e])
+  }
+  x2 <- c(x2,e+1)
+  inv2 <- c(inv2,inv2[length(inv2)]-dem2[e])
+  
+  #Simulación 3
+  if(inv3[length(inv3)]<=sS["s",e]){
+    x3 <- c(x3,e)
+    inv3 <- c(inv3,sS["S",e])
+  }
+  x3 <- c(x3,e+1)
+  inv3 <- c(inv3,inv3[length(inv3)]-dem3[e])
+}
+
+fig2 <- plot_ly(x = x1, y = inv1, name = "Simulación 1", mode = 'lines+markers', type = "scatter")
+fig2 <- fig2 %>% add_trace(x = x2, y = inv2, name = "Simulación 2")
+fig2 <- fig2 %>% add_trace(x = x3, y = inv3, name = "Simulación 3")
+fig2 <- fig2 %>% add_trace(x = epocas, y = sS["s",], name = "s", mode = 'markers')
+fig2 <- fig2 %>% add_trace(x = epocas, y = sS["S",], name = "S", mode = 'markers')
+fig2 <- fig2 %>% layout(title = "Política (s,S)" ,xaxis = list(title = 'Época'),
+                        yaxis = list(title = 'Nivel de Inventario'),
+                        annotations = list(text = paste("Costo total esperado:\n",round(f_rec["0",1])),  x = 8, y = 170,showarrow=FALSE ))
+fig2
+
+```
+
